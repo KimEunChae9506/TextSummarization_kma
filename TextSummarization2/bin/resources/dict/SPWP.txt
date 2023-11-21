@@ -1,0 +1,1 @@
+#User Define 사전 ex) proten	pro,ten

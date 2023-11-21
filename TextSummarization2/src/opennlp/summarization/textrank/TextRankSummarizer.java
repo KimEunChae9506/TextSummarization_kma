@@ -1,0 +1,168 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements. See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package opennlp.summarization.textrank;
+
+import java.io.File;
+import java.net.URL;
+import java.util.*;
+
+import com.pro10.kma.MorphAnalysis;
+import com.pro10.kma.analyzer.ProToken;
+
+import opennlp.summarization.*;
+import opennlp.summarization.preprocess.IDFWordWeight;
+import opennlp.summarization.preprocess.WordWeight;
+import opennlp.summarization.preprocess.DefaultDocProcessor;
+
+/*
+ * A wrapper around the text rank algorithm.  This class
+ * a) Sets up the data for the TextRank class
+ * b) Takes the ranked sentences and does some basic rearranging (e.g. ordering) to provide a more reasonable summary.
+ */
+public class TextRankSummarizer implements Summarizer {
+
+  // An optional file to store idf of words. If idf is not available it uses a default equal weight for all words.
+  private final String idfFile = "C:\\Users\\은채\\Desktop\\idf.csv";
+  private static MorphAnalysis morph;
+  
+  public TextRankSummarizer() {
+  }
+
+  /*Sets up data and calls the TextRank algorithm..*/
+  public List<Score> rankSentences(String doc, List<Sentence> sentences,
+                                   DocProcessor dp, int maxWords ) {
+
+   if (morph == null) {
+      morph = new MorphAnalysis(true, false, true);
+      File f = new File(".");
+      URL idfUrls = TextRankSummarizer.class.getClassLoader().getResource("");
+      String url = "";
+      String os = System.getProperty("os.name").toLowerCase();
+      
+      if(os.contains("win")) {
+    	  if(idfUrls.toString().contains("dbcrawler")) {
+    		  url = idfUrls.toString().substring(6).substring(0,idfUrls.toString().substring(6).indexOf("batch") -1);
+    	  } else if(idfUrls.toString().contains("manager")) {
+    		  url = idfUrls.toString().substring(10).substring(0,idfUrls.toString().substring(10).indexOf("WEB-INF") -1);
+    	  }
+    	  
+      } else if(os.contains("nix") || os.contains("linux")) {
+    	  url = idfUrls.toString().substring(5).substring(0,idfUrls.toString().substring(5).indexOf("WEB-INF") -1);
+      }
+
+      //System.out.println("morph location :: "+url +"/resources");
+      morph.loadFile(url +"/resources");
+      //morph.loadFile("E:\\\\resources");
+    }     
+    try {
+      //Rank sentences
+      TextRank summ = new TextRank(dp);
+      List<String> sentenceStrL = new ArrayList<>();
+      List<String> processedSent = new ArrayList<>();
+      Hashtable<String, List<Integer>> iidx = new Hashtable<>();
+      List<String> tokenList = new ArrayList<>();
+      //     dp.getSentences(sentences, sentenceStrL, iidx, processedSent);
+
+      for(Sentence s : sentences){
+        sentenceStrL.add(s.getStringVal());
+        String stemmedSent = s.stem();
+        processedSent.add(stemmedSent);
+
+        //String[] wrds = stemmedSent.split(" ");
+
+        List<ProToken> p1 = morph.getAutoMorpheme(s.toString());
+        String[] wrds = new String[p1.size()];
+        for(int i=0; i < p1.size(); i++) {
+        	wrds[i] = p1.get(i).getTerm();
+        	tokenList.add(p1.get(i).getTerm());
+        }
+        
+        for(String w: wrds)
+        {
+          if(iidx.get(w)!=null)
+            iidx.get(w).add(s.getSentId());
+          else{
+            List<Integer> l = new ArrayList<>();
+            l.add(s.getSentId());
+            iidx.put(w, l);
+          }
+        }
+      }
+
+      WordWeight wordWt = new IDFWordWeight(idfFile);////new
+
+      List<Score> finalScores = summ.getRankedSentences(doc, sentenceStrL, iidx, processedSent,tokenList);
+      List<String> sentenceStrList = summ.getSentences();
+
+      // SentenceClusterer clust = new SentenceClusterer();
+      //  clust.runClusterer(doc, summ.processedSent);
+
+      Hashtable<Integer,List<Integer>> links= summ.getLinks();
+
+      for(int i=0;i<sentences.size();i++)
+      {
+        Sentence st = sentences.get(i);
+
+        //Add links..
+        List<Integer> currLnks = links.get(i);
+        if(currLnks==null) continue;
+        for(int j=0;j<currLnks.size();j++)
+        {
+          if(j<i) st.addLink(sentences.get(j));
+        }
+      }
+
+      for (Score s : finalScores) {
+        Sentence st = sentences.get(s.getSentId());
+        st.setPageRankScore(s);
+      }
+
+      List<Score> reRank = finalScores;//reRank(sentences, finalScores, iidx, wordWt, maxWords);
+     
+      return reRank;
+    } catch (Exception e) {
+      e.printStackTrace();
+    }
+    return null;
+  }
+
+  //Returns the summary as a string.
+  @Override
+  public String summarize(String article, DefaultDocProcessor dp, int maxWords) {
+    List<Sentence> sentences = dp.getSentencesFromStr(article);
+    
+    List<Score> scores = this.rankSentences(article, sentences, dp, maxWords);
+    return scores2String(sentences, scores, maxWords);
+  }
+
+  /* Use the page rank scores to determine the summary.*/
+  public String scores2String(List<Sentence> sentences, List<Score> scores, int maxWords) {
+    StringBuilder b = new StringBuilder();
+    // for(int i=0;i< min(maxWords, scores.size()-1);i++)
+    int i=0;
+    
+    while(b.length()< maxWords && i< scores.size())
+    {
+      String sent = sentences.get(scores.get(i).getSentId()).getStringVal();
+      b.append(sent);
+      i++;
+    }
+    return b.toString();
+  }
+
+}
